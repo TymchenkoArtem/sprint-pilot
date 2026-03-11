@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.sprint-pilot/workflows/
+coverage/
+
+# IDE local files
+.vs/
+
+# AI tool local files
+.claude/
+.cursor/commands/
+.sprint-pilot/
+.claude/settings.local.json

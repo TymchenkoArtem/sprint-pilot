@@ -1,0 +1,70 @@
+# Security Audit
+#
+# Runs weekly on Sunday at midnight UTC and can be triggered manually.
+# Checks all dependencies for moderate, high, and critical vulnerabilities.
+# On failure, creates a GitHub issue so the team is notified.
+
+name: Security Audit
+
+on:
+  schedule:
+    # Every Sunday at 00:00 UTC
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run npm audit
+        id: audit
+        run: |
+          npm audit --audit-level=moderate 2>&1 | tee audit-output.txt
+        continue-on-error: true
+
+      - name: Create GitHub issue on failure
+        if: steps.audit.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          AUDIT_BODY=$(head -100 audit-output.txt)
+          ISSUE_BODY="## Security Audit Failed
+
+          The weekly dependency audit found vulnerabilities at **moderate** severity or above.
+
+          <details>
+          <summary>Audit output (first 100 lines)</summary>
+
+          \`\`\`
+          ${AUDIT_BODY}
+          \`\`\`
+
+          </details>
+
+          ### Next steps
+
+          1. Run \`npm audit\` locally to review the full report.
+          2. Update affected dependencies with \`npm update\` or \`npm audit fix\`.
+          3. If a fix is not yet available, evaluate the risk and document a mitigation plan.
+          4. Runtime dependency vulnerabilities (\`@modelcontextprotocol/sdk\`, \`keytar\`, \`zod\`) block releases.
+
+          _This issue was created automatically by the security-audit workflow._"
+
+          gh issue create \
+            --title "Security audit: vulnerabilities detected ($(date +%Y-%m-%d))" \
+            --body "${ISSUE_BODY}" \
+            --label "security"

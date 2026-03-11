@@ -1,0 +1,80 @@
+# Release -- Publish to npm
+#
+# Triggered when a version tag (v*) is pushed. Builds, tests, verifies the dist
+# output, and publishes to npm with provenance attestation.
+#
+# Requires the NPM_TOKEN secret to be configured in repository settings.
+# The npm token must be a granular access token (not a classic token) for
+# provenance to work.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Verify dist structure
+        run: |
+          test -f dist/index.js || (echo "Missing dist/index.js" && exit 1)
+          test -f dist/cli/index.js || (echo "Missing dist/cli/index.js" && exit 1)
+          head -1 dist/cli/index.js | grep -q '#!/usr/bin/env node'
+
+      - name: Verify templates included
+        run: |
+          test -d templates/instructions || (echo "Missing templates/instructions" && exit 1)
+          test -d templates/templates || (echo "Missing templates/templates" && exit 1)
+          test -f templates/instructions/CLAUDE.md || (echo "Missing CLAUDE.md template" && exit 1)
+
+      - name: Dry run pack to inspect tarball
+        run: |
+          npm pack --dry-run 2>&1 | tee pack-output.txt
+          # Log the tarball contents for review
+          echo "--- Tarball summary ---"
+          grep -E '(total files|unpacked size|Tarball)' pack-output.txt || true
+
+      - name: Publish with provenance
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Post-publish verification
+        run: |
+          EXPECTED_VERSION=$(node -p "require('./package.json').version")
+          echo "Expected version: $EXPECTED_VERSION"
+          sleep 15
+          PUBLISHED_VERSION=$(npm view sprint-pilot version 2>/dev/null || echo "not-found")
+          echo "Published version: $PUBLISHED_VERSION"
+          if [ "$EXPECTED_VERSION" != "$PUBLISHED_VERSION" ]; then
+            echo "Version mismatch: expected $EXPECTED_VERSION, got $PUBLISHED_VERSION"
+            exit 1
+          fi
+          echo "Version verified successfully."

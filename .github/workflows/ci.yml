@@ -1,0 +1,179 @@
+# Continuous Integration
+#
+# Runs on every push to main/develop and on pull requests targeting main.
+# Jobs: lint, typecheck, format-check, security-test, test (matrix: 18/20/22),
+# build, and a separate security audit.
+#
+# Branch protection should require all of these checks to pass before merging.
+
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------
+  # Static analysis jobs -- run in parallel, gate the test matrix
+  # ---------------------------------------------------------------
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run lint
+
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+  format-check:
+    name: Format check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run format:check
+
+  # ---------------------------------------------------------------
+  # Security tests -- 100% branch coverage on src/security/**
+  # ---------------------------------------------------------------
+
+  security-test:
+    name: Security tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run security tests with 100% branch coverage
+        run: |
+          npx vitest run tests/security/ \
+            --coverage \
+            --coverage.thresholds.branches=100 \
+            --coverage.include='src/security/**'
+
+  # ---------------------------------------------------------------
+  # Test matrix -- runs after static analysis and security tests pass
+  # ---------------------------------------------------------------
+
+  test:
+    name: Test (Node ${{ matrix.node-version }})
+    needs: [lint, typecheck, format-check, security-test]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [18, 20, 22]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run tests with coverage
+        run: npm run test -- --coverage
+
+      - name: Upload coverage artifact
+        if: matrix.node-version == 20
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 14
+
+  # ---------------------------------------------------------------
+  # Build -- runs after all test matrix entries pass
+  # ---------------------------------------------------------------
+
+  build:
+    name: Build
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - name: Verify dist output exists
+        run: |
+          test -f dist/index.js || (echo "Missing dist/index.js" && exit 1)
+          test -f dist/cli/index.js || (echo "Missing dist/cli/index.js" && exit 1)
+
+      - name: Verify CLI shebang
+        run: head -1 dist/cli/index.js | grep -q '#!/usr/bin/env node'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  # ---------------------------------------------------------------
+  # Security audit -- checks for high/critical vulnerabilities
+  # ---------------------------------------------------------------
+
+  audit:
+    name: npm audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Audit for high and critical vulnerabilities
+        run: npm audit --audit-level=high
